@@ -1,8 +1,15 @@
+import { useMemo, useState } from "react";
+import { Search, X } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export default function Docs() {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+
   return (
     <div>
       <PageHeader
@@ -10,6 +17,45 @@ export default function Docs() {
         description="Architecture, scoring formulas, and integration reference for Sehat Atlas."
       />
       <div className="mx-auto max-w-3xl space-y-6 p-8">
+        <div className="sticky top-0 z-10 -mx-2 bg-background/80 px-2 py-2 backdrop-blur">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search docs — try 'trust scoring', 'schema', 'pipeline'…"
+              className="pl-9 pr-9"
+              aria-label="Search documentation"
+            />
+            {query && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setQuery("")}
+                className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+                aria-label="Clear search"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+          {q && (
+            <div className="mt-2 flex flex-wrap gap-1 text-xs text-muted-foreground">
+              <span>Quick jump:</span>
+              {["Trust scoring formula", "Expected table schema", "Agent pipeline", "Contradiction rules", "Architecture"].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setQuery(s)}
+                  className="rounded border bg-muted/50 px-1.5 py-0.5 hover:bg-muted"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <SearchableArea query={q}>
         <Section title="What is Sehat Atlas?">
           <p>
             Sehat Atlas is the reasoning layer for Indian healthcare. It ingests 10,000+ unstructured facility records,
