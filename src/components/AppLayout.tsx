@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { Activity, Search, ShieldCheck, Map, GitBranch, Database, Stethoscope } from "lucide-react";
+import { Activity, Search, ShieldCheck, Map, GitBranch, Database, Stethoscope, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -9,6 +9,7 @@ const NAV = [
   { to: "/map", label: "Desert Map", icon: Map },
   { to: "/trace", label: "Agent Traces", icon: GitBranch },
   { to: "/databricks", label: "Databricks", icon: Database },
+  { to: "/docs", label: "Documentation", icon: BookOpen },
 ];
 
 export default function AppLayout() {
