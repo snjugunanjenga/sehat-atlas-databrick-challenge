@@ -176,9 +176,57 @@ X-Connection-Api-Key: \${DATABRICKS_API_KEY}
   "wait_timeout": "30s"
 }`}</pre>
         </Section>
+        </SearchableArea>
       </div>
     </div>
   );
+}
+
+function SearchableArea({ query, children }: { query: string; children: React.ReactNode }) {
+  const sections = useMemo(() => {
+    const arr = Array.isArray(children) ? children : [children];
+    if (!query) return { nodes: arr, matches: arr.length, total: arr.length };
+    const filtered = arr.filter((child: any) => {
+      if (!child || typeof child !== "object") return false;
+      const title: string = child.props?.title ?? "";
+      const text = extractText(child).toLowerCase();
+      return title.toLowerCase().includes(query) || text.includes(query);
+    });
+    return { nodes: filtered, matches: filtered.length, total: arr.length };
+  }, [children, query]);
+
+  return (
+    <div className="space-y-6">
+      {query && (
+        <p className="text-xs text-muted-foreground">
+          {sections.matches} of {sections.total} sections match "{query}"
+        </p>
+      )}
+      {sections.nodes.length === 0 ? (
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            No sections match. Try "trust", "schema", "pipeline", "contradiction", or "databricks".
+          </CardContent>
+        </Card>
+      ) : (
+        sections.nodes
+      )}
+    </div>
+  );
+}
+
+function extractText(node: any): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join(" ");
+  if (typeof node === "object" && node.props) {
+    let s = "";
+    if (node.props.title) s += " " + node.props.title;
+    if (node.props.rows) s += " " + JSON.stringify(node.props.rows);
+    if (node.props.children) s += " " + extractText(node.props.children);
+    return s;
+  }
+  return "";
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
