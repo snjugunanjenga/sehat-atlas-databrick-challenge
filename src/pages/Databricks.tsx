@@ -1,14 +1,85 @@
+import { useEffect, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
-import { Database, CheckCircle2, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Database, CheckCircle2, AlertCircle, Loader2, XCircle } from "lucide-react";
+import { useDataSource } from "@/data/dataSource";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+
+interface Status {
+  connected: boolean;
+  outcome?: string;
+  latency_ms?: number;
+  error?: string;
+}
 
 export default function Databricks() {
+  const [source, setSource] = useDataSource();
+  const [status, setStatus] = useState<Status | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setChecking(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("databricks-status");
+      if (error) throw error;
+      setStatus(data as Status);
+    } catch (e) {
+      setStatus({ connected: false, error: e instanceof Error ? e.message : "Function not deployed yet" });
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    const i = setInterval(refresh, 30000);
+    return () => clearInterval(i);
+  }, []);
+
+  const onToggle = (on: boolean) => {
+    if (on && !status?.connected) {
+      toast.error("Connect Databricks first.");
+      return;
+    }
+    setSource(on ? "databricks" : "local");
+    toast.success(on ? "Routing queries through Databricks" : "Using local index");
+  };
+
+  const runTest = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("databricks-search", {
+        body: { query: "Cardiology hospitals in Maharashtra" },
+      });
+      if (error) throw error;
+      setTestResult(JSON.stringify(data, null, 2));
+    } catch (e) {
+      setTestResult(`Error: ${e instanceof Error ? e.message : "Unknown"}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // Setup checklist — three things must be true to flip the toggle.
+  const checks = [
+    { label: "Databricks connector linked", ok: !!status && !status.error?.includes("not linked") },
+    { label: "DATABRICKS_WAREHOUSE_ID configured", ok: !status?.error?.includes("WAREHOUSE_ID") },
+    { label: "Connection verified by gateway", ok: !!status?.connected },
+  ];
+
   return (
     <div>
       <PageHeader
         title="Databricks Integration"
-        description="Run retrieval and reasoning against your Databricks workspace — Vector Search, Agent Bricks, and SQL Warehouses."
+        description="Run retrieval and reasoning against your Databricks workspace via the Lovable connector gateway."
       />
       <div className="space-y-6 p-8">
         <Card>
@@ -18,34 +89,85 @@ export default function Databricks() {
                 <Database className="h-6 w-6" />
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold">Connect your Databricks workspace</h3>
+                <div className="flex flex-wrap items-center gap-3">
+                  <h3 className="font-semibold">Workspace status</h3>
+                  <StatusBadge status={status} checking={checking} />
+                </div>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Once connected, the agent can route retrieval to your Mosaic AI Vector Search index, run SQL against your Unity Catalog, and call Agent Bricks endpoints — all proxied through the Lovable connector gateway.
+                  Once verified, Facility Search and Trust Scorer route through your Databricks SQL Warehouse. Token refresh and credential storage are handled automatically — no API keys leak to the browser.
                 </p>
-                <div className="mt-3 flex items-center gap-3">
-                  <Button>Connect Databricks</Button>
-                  <span className="text-xs text-muted-foreground">Status: not connected</span>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <Button onClick={refresh} variant="outline" size="sm" disabled={checking}>
+                    {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                    Re-check status
+                  </Button>
+                  {status?.error && (
+                    <span className="text-xs text-muted-foreground">{status.error}</span>
+                  )}
                 </div>
               </div>
             </div>
           </CardContent>
         </Card>
 
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="text-sm font-semibold">Setup checklist</h3>
+            <ul className="mt-3 space-y-2">
+              {checks.map((c) => (
+                <li key={c.label} className="flex items-center gap-2 text-sm">
+                  {c.ok ? (
+                    <CheckCircle2 className="h-4 w-4 text-verified" />
+                  ) : (
+                    <XCircle className="h-4 w-4 text-contradicted" />
+                  )}
+                  <span className={c.ok ? "" : "text-muted-foreground"}>{c.label}</span>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="flex flex-wrap items-center justify-between gap-4 p-6">
+            <div>
+              <Label htmlFor="db-toggle" className="text-sm font-semibold">
+                Use Databricks for queries
+              </Label>
+              <p className="mt-1 text-xs text-muted-foreground">
+                When on, Facility Search and Trust Scorer hit your Databricks SQL Warehouse. When off, they use the local precomputed index.
+              </p>
+            </div>
+            <Switch
+              id="db-toggle"
+              checked={source === "databricks"}
+              onCheckedChange={onToggle}
+              disabled={!status?.connected}
+            />
+          </CardContent>
+        </Card>
+
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Capability title="Vector Search" desc="Route facility retrieval to Mosaic AI Vector Search for sub-100 ms semantic search across the full 10k corpus." />
-          <Capability title="SQL Warehouse" desc="Run analytical SQL on Unity Catalog tables for desert detection at PIN-code granularity." />
-          <Capability title="Agent Bricks" desc="Call your trained extraction model for structured pull from messy facility notes." />
+          <Capability title="SQL Warehouse" desc="Live now. Powers Search & Trust Scorer via parameterized SQL through the gateway." />
+          <Capability title="Vector Search" desc="Drop-in replacement for retrieval — proxy ready, swap the SQL call for /vector-search/index/{name}/query." />
+          <Capability title="Agent Bricks" desc="Call your trained extraction model for structured pull from new facility notes." />
         </div>
 
         <Card>
           <CardContent className="space-y-3 p-6">
-            <h3 className="text-sm font-semibold">How it works</h3>
-            <ol className="space-y-2 text-sm text-muted-foreground">
-              <Step n={1}>This frontend runs against an in-memory index built from the VF India dataset (10,000 rows).</Step>
-              <Step n={2}>When Databricks is connected, an edge function proxies queries to your workspace via the gateway, with secure token refresh handled automatically.</Step>
-              <Step n={3}>Toggle individual subsystems (Vector Search, SQL Warehouse, Agent Bricks) on/off — the app falls back to the local index when off.</Step>
-              <Step n={4}>Every call is recorded as a trace step in the Agent Traces view, just like MLflow 3 tracing.</Step>
-            </ol>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold">Live test query</h3>
+              <Button size="sm" onClick={runTest} disabled={testing || !status?.connected}>
+                {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                Run sample query
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Sends <code className="rounded bg-muted px-1 py-px">"Cardiology hospitals in Maharashtra"</code> through the gateway and shows the raw response.
+            </p>
+            {testResult && (
+              <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 text-[11px]">{testResult}</pre>
+            )}
           </CardContent>
         </Card>
 
@@ -59,7 +181,7 @@ X-Connection-Api-Key: \${DATABRICKS_API_KEY}
 
 {
   "warehouse_id": "<your-warehouse-id>",
-  "statement": "SELECT state, COUNT(*) FROM facilities WHERE evidenced_oncology GROUP BY state",
+  "statement": "SELECT state, COUNT(*) FROM facilities WHERE array_contains(evidenced, 'Oncology') GROUP BY state",
   "wait_timeout": "30s"
 }`}
             </pre>
@@ -67,6 +189,22 @@ X-Connection-Api-Key: \${DATABRICKS_API_KEY}
         </Card>
       </div>
     </div>
+  );
+}
+
+function StatusBadge({ status, checking }: { status: Status | null; checking: boolean }) {
+  if (checking) return <Badge variant="secondary"><Loader2 className="h-3 w-3 animate-spin" /> Checking…</Badge>;
+  if (!status) return null;
+  if (status.connected)
+    return (
+      <Badge className="bg-verified text-verified-foreground hover:bg-verified">
+        <CheckCircle2 className="h-3 w-3" /> Connected{status.latency_ms ? ` · ${status.latency_ms} ms` : ""}
+      </Badge>
+    );
+  return (
+    <Badge variant="outline" className="border-flagged/40 text-flagged">
+      <AlertCircle className="h-3 w-3" /> Not connected
+    </Badge>
   );
 }
 
@@ -81,14 +219,5 @@ function Capability({ title, desc }: { title: string; desc: string }) {
         <p className="mt-2 text-xs text-muted-foreground">{desc}</p>
       </CardContent>
     </Card>
-  );
-}
-
-function Step({ n, children }: { n: number; children: React.ReactNode }) {
-  return (
-    <li className="flex gap-3">
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">{n}</span>
-      <span className="flex-1 pt-0.5">{children}</span>
-    </li>
   );
 }
