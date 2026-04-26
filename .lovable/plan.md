@@ -1,52 +1,100 @@
-## Plan — 4 features for Sehat Atlas
+## Goal
 
-### 1. Databricks connector wired into Facility Search & Trust Scorer
+Two outcomes in one pass:
 
-**Connection setup**
-- Use `standard_connectors--connect` with `connector_id: "databricks"` to link the Databricks connection to this project. (Lovable Cloud will be enabled first if not already, since gateway secrets are exposed via edge functions.)
-- The user will be asked in the picker for: their Databricks **warehouse ID** and the **catalog.schema.table** name where the 10k facility dataset lives (we'll capture these as runtime secrets `DATABRICKS_WAREHOUSE_ID` and `DATABRICKS_FACILITIES_TABLE` so the same code works for any workspace).
+1. **Get Databricks actually working** — currently the edge functions exist but the connector was declined last round, so `DATABRICKS_API_KEY` isn't in the environment and the toggle on `/databricks` doesn't render. We need to (a) link the connector, (b) collect the warehouse ID + table name as runtime secrets, (c) make the Databricks page interactive (status badge, toggle, test query), and (d) actually swap `FacilitySearch` and `TrustScorer` to use `searchFacilities()` / `listTrust()` from `dataSource.ts` instead of calling `runAgent` / reading JSON directly.
+2. **Document everything** — replace the placeholder `README.md` and add an in-app `/docs` route so judges can read the architecture without leaving the app.
 
-**New edge functions** (proxy the gateway, keep secrets server-side)
-- `supabase/functions/databricks-search/index.ts` — accepts `{ query, filters }`, parses intent (state/city/specialty/24-7) and runs a parameterized SQL statement against `${GATEWAY_URL}/2.0/sql/statements` to return the top ~50 candidate rows, then runs the existing JS scorer on the result.
-- `supabase/functions/databricks-trust/index.ts` — accepts `{ search, sortBy, asc, limit, offset }` and returns paginated trust-scored rows + per-facility detail (claimed/evidenced/contradictions/citations) on demand.
-- `supabase/functions/databricks-status/index.ts` — calls `/api/v1/verify_credentials` to confirm the connection is live; powers a green/red badge on the Databricks page and in the sidebar.
-- All three include CORS headers, Zod input validation, and `Authorization: Bearer ${LOVABLE_API_KEY}` + `X-Connection-Api-Key: ${DATABRICKS_API_KEY}`.
+---
 
-**Frontend changes**
-- New `src/data/dataSource.ts` — single switch (`useDatabricks` from `localStorage`) that decides whether `runAgent` / Trust list call the edge functions or fall back to the precomputed JSON. Exposes `searchFacilities(query)` and `listTrust(params)` with the same return shape as today, so pages don't change much.
-- `Databricks.tsx` becomes interactive: live status badge, "Use Databricks for queries" toggle, "Test query" button that runs a sample SQL and shows raw JSON, and step list that records each gateway call as a new TraceStep so it shows up in `/trace`.
-- `FacilitySearch.tsx` and `TrustScorer.tsx` swap `runAgent(...)` / direct `useFacilities()` reads for the `dataSource` helpers; UI shows a small "via Databricks" or "via local index" pill.
+## Part 1 — Fix the Databricks connection (step by step)
 
-### 2. Query history panel on Facility Search
+### Step 1.1 — Link the Databricks connector
+- Call `standard_connectors--connect` with `connector_id: "databricks"`.
+- The picker walks the user through OAuth / personal-access-token entry against their Databricks workspace.
+- Once the connection is linked, the gateway secrets `LOVABLE_API_KEY` and `DATABRICKS_API_KEY` become available to all edge functions automatically — no code change needed for those two.
 
-- New `src/hooks/useQueryHistory.ts` — `localStorage`-backed (key `sehat.history`), keeps last 20 entries: `{ id, query, ts, resultCount, topFacilityId, snapshot }`. `snapshot` stores the full `AgentResult` so re-opening is instant and consistent with the run that produced it.
-- New `src/components/QueryHistory.tsx` — collapsible card under the search bar on `/search` showing recent queries with result count + timestamp; each row has **Rerun** (re-executes against current data source so live data refreshes) and **Open snapshot** (loads stored `AgentResult` without re-querying). Trash icon clears one or all.
-- The same hook is reused by Agent Trace page so users can jump back to the original chain-of-thought from history.
+### Step 1.2 — Collect the workspace-specific values
+Two values can't come from OAuth and have to be entered as runtime secrets:
+- `DATABRICKS_WAREHOUSE_ID` — the SQL Warehouse the queries run against.
+- `DATABRICKS_FACILITIES_TABLE` — fully-qualified `catalog.schema.table` where the 10k facility dataset lives (defaults to `main.sehat.facilities` if not set).
 
-### 3. Map hover + click drill-down
+Use `add_secret` for each so the user pastes them in the secret modal. Edge functions already read them via `Deno.env.get(...)`.
 
-- In `DesertMap.tsx`:
-  - State bubbles get `onMouseEnter`/`onMouseLeave` for a floating tooltip showing `state · coverage% · verified/total · top facility name`.
-  - Clicking a state bubble opens a new right-side `Sheet` ("State drill-down") listing the **top 10 facilities** in that state for the selected specialty, ranked by `evidenced + trust − contraN` — same scoring used by the agent. Each row shows trust badge, district, beds, 24/7 flag, and a "View in Trust Scorer" link (deep-links to `/trust?focus=<id>` which auto-opens the detail sheet).
-  - Individual facility dots also become clickable and hover-highlightable (cursor + radius bump), opening the same drill-down filtered to that one facility.
-  - A small "View on map" button is added to each Facility Search result that scrolls/links to `/map?specialty=<sp>&state=<state>` with the right specialty pre-selected and the state bubble pre-opened.
+### Step 1.3 — Verify the connection from the app
+- Deploy `databricks-status`, `databricks-search`, `databricks-trust` (already written; deploy once secrets are in place).
+- Hit `databricks-status` via `supabase--curl_edge_functions` to confirm `{ connected: true, outcome: "verified" }`.
+- If it returns `failed`, surface the error string to the user and stop — likely a token/scope issue that needs `standard_connectors--reconnect`.
 
-### 4. Export results as CSV or PDF
+### Step 1.4 — Make `Databricks.tsx` interactive
+Replace the static marketing card with:
+- **Live status badge** (green "Connected · 142 ms" / red "Not connected") driven by a `useQuery` against `databricks-status` that polls every 30 s.
+- **"Use Databricks for queries" toggle** bound to `useDataSource()` from `src/data/dataSource.ts` — flips `localStorage.sehat.useDatabricks` and broadcasts `sehat:datasource` so the rest of the app re-renders.
+- **"Test query" button** that runs `SELECT state, COUNT(*) FROM ${TABLE} GROUP BY state LIMIT 10` via `databricks-search` (or a dedicated `databricks-test` action) and shows raw JSON below.
+- **Setup checklist** — three steps with green checkmarks: (1) connector linked, (2) `DATABRICKS_WAREHOUSE_ID` set, (3) `DATABRICKS_FACILITIES_TABLE` set. Each row has a "Configure" button if missing.
 
-- New `src/lib/export.ts`:
-  - `exportCSV(rows, filename)` — builds CSV with columns: name, type, state, district, pin, beds, claimed, evidenced, trust, contradictions count, missing count, top citation. Uses native `Blob` + `URL.createObjectURL` (no deps).
-  - `exportPDF(result, details, filename)` — uses `jspdf` + `jspdf-autotable` (already common, small) to render: header (query, timestamp, data source), summary table of top facilities with trust scores, then a per-facility section with citations and validator flags. Footer has a "Sehat Atlas" mark and page numbers.
-- New `src/components/ExportMenu.tsx` — dropdown button ("Export ▾") with CSV / PDF options; placed in:
-  - **Facility Search** results header — exports the current `AgentResult.matches` + their `details`.
-  - **Trust Scorer** — exports the currently filtered/sorted rows (top 100 visible).
-  - **Desert Map state drill-down** — exports the top facilities for the selected state+specialty.
-- A `?download=csv|pdf` query param also triggers export on load, so users can share a link that produces a report.
+### Step 1.5 — Wire Search & Trust to the data-source layer
+Right now `FacilitySearch.tsx` calls `runAgent(q, facilities)` directly and `TrustScorer.tsx` reads from `useFacilities()`. Both need to go through `dataSource.ts` (which already exists and already falls back to the local index on error):
 
-### Files touched
-- New: `supabase/functions/databricks-{search,trust,status}/index.ts`, `src/data/dataSource.ts`, `src/hooks/useQueryHistory.ts`, `src/components/QueryHistory.tsx`, `src/components/ExportMenu.tsx`, `src/lib/export.ts`.
-- Edited: `src/pages/Databricks.tsx` (interactive), `src/pages/FacilitySearch.tsx` (history + export + map link), `src/pages/TrustScorer.tsx` (data-source switch + export + `?focus=`), `src/pages/DesertMap.tsx` (hover/click drill-down + URL params), `src/data/agent.ts` (extract reusable scorer), `src/App.tsx` (no route changes; just imports if needed).
-- Deps added: `jspdf`, `jspdf-autotable`.
+- **`FacilitySearch.tsx`**: replace the `setTimeout(() => setResult(runAgent(...)))` block with `await searchFacilities(q)`. Show a small pill `via Databricks` or `via local index` next to the agent answer based on `result.source`.
+- **`TrustScorer.tsx`**: replace the in-component `useMemo` filter/sort with a `useQuery(['trust', search, sortBy, asc], () => listTrust({ search, sortBy, asc, limit: 100 }))`. Same pill in the table header.
+- Both pages keep working offline because `dataSource.ts` already catches errors and returns `{ source: "local", ... }`.
 
-### Out of scope / assumptions
-- Schema of the Databricks table is assumed to roughly mirror `FacilitySlim` + a `details_json` column. If the user's table is different, the edge function's SQL will be adjusted in a follow-up — the rest of the UI is decoupled via `dataSource.ts`.
-- No auth gate on the edge functions for now (single-tenant demo); rate limiting is in-memory inside the function. Can be hardened later.
+### Step 1.6 — Trace the Databricks calls
+Each gateway call returned by the edge functions already includes a `trace[]` array (Reasoner → Retriever → Scorer with `ms` timings). The Agent Trace page reads `result.trace`, so this just works once Search uses `searchFacilities()`. No additional change needed.
+
+---
+
+## Part 2 — Project documentation
+
+### Step 2.1 — Rewrite `README.md`
+Replace the placeholder with a proper hackathon-grade README:
+- **What it is** — Sehat Atlas, agentic healthcare intelligence over the VF India 10k facility dataset.
+- **Architecture diagram** (ASCII) — frontend (React/Vite) → `dataSource.ts` switch → either local JSON index OR Supabase Edge Functions → Lovable Connector Gateway → Databricks SQL Warehouse + Vector Search + Agent Bricks.
+- **Five core surfaces** with screenshots/links to each route.
+- **Trust Scorer logic** — explain the contradiction rules (claims Advanced Surgery without anesthesiologist, etc.) and the 0–100 scoring formula.
+- **Setup** — how to run locally, how to enable Databricks (link to in-app `/databricks` page).
+- **Datasets** — note the slim/details split (3 MB + 5.7 MB) and the rationale.
+- **Tech stack & file map** — short table of the important files.
+
+### Step 2.2 — Add an in-app `/docs` route
+A new page so judges/users can read everything without checking out the repo:
+- New file `src/pages/Docs.tsx` rendered with the existing `PageHeader` + Markdown-style sections (using Tailwind prose).
+- Add nav entry in `AppLayout.tsx` and route in `App.tsx`.
+- Sections: **Overview**, **How the agent reasons**, **Trust scoring**, **Databricks integration** (with sample SQL + sample gateway response), **Data schema** (FacilitySlim / FacilityDetail), **Privacy & data handling**.
+
+### Step 2.3 — Inline JSDoc on key modules
+Add short header doc-comments to:
+- `src/data/agent.ts` — explain `runAgent` stages.
+- `src/data/dataSource.ts` — already has a header; expand it with the "fall back to local on error" contract.
+- `src/data/facilities.ts` — document the trust formula and citation extraction.
+- `supabase/functions/databricks-*/index.ts` — already have headers; extend with secret requirements.
+
+---
+
+## Files touched
+
+**New**
+- `src/pages/Docs.tsx`
+
+**Edited**
+- `src/pages/Databricks.tsx` — interactive status / toggle / test query / setup checklist
+- `src/pages/FacilitySearch.tsx` — use `searchFacilities()`, show source pill
+- `src/pages/TrustScorer.tsx` — use `listTrust()`, show source pill
+- `src/components/AppLayout.tsx` — add Docs nav item
+- `src/App.tsx` — add `/docs` route
+- `README.md` — full rewrite
+- `src/data/agent.ts`, `src/data/facilities.ts` — JSDoc only
+
+**Tools/calls**
+- `standard_connectors--connect` (databricks)
+- `add_secret` × 2 (`DATABRICKS_WAREHOUSE_ID`, `DATABRICKS_FACILITIES_TABLE`)
+- `supabase--deploy_edge_functions` (`databricks-status`, `databricks-search`, `databricks-trust`)
+- `supabase--curl_edge_functions` to verify `databricks-status`
+
+---
+
+## Out of scope / assumptions
+- Schema of your Databricks table is assumed to roughly match the slim JSON (`id, name, state, district, pin, latitude, longitude, beds, doctors, claimed[], evidenced[], open_247, trust, contradictions_n, missing_n`). If your real table differs, the edge function SQL will need a small column-mapping tweak — call this out after the first failed query and adjust.
+- Vector Search and Agent Bricks endpoints are documented in `/docs` but not wired up yet — current implementation is SQL Warehouse only. Easy to add as a follow-up since the proxy pattern is already in place.
+- If you'd rather skip Databricks entirely and just ship the local-index version, say so and I'll do only Part 2 (docs).
