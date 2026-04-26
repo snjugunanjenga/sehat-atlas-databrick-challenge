@@ -10,6 +10,7 @@ import TrustScorer from "./pages/TrustScorer";
 import DesertMap from "./pages/DesertMap";
 import AgentTrace from "./pages/AgentTrace";
 import Databricks from "./pages/Databricks";
+import Docs from "./pages/Docs";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
             <Route path="/map" element={<DesertMap />} />
             <Route path="/trace" element={<AgentTrace />} />
             <Route path="/databricks" element={<Databricks />} />
+            <Route path="/docs" element={<Docs />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
