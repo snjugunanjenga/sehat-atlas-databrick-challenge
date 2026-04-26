@@ -10,6 +10,7 @@ import TrustScorer from "./pages/TrustScorer";
 import DesertMap from "./pages/DesertMap";
 import AgentTrace from "./pages/AgentTrace";
 import Databricks from "./pages/Databricks";
+import Docs from "./pages/Docs";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
