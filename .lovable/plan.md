@@ -1,69 +1,52 @@
-# Sehat Atlas — Agentic Healthcare Intelligence for India
+## Plan — 4 features for Sehat Atlas
 
-A web dashboard that turns 10,000 messy Indian facility records into a living intelligence layer: searchable by natural language, scored for trust, mapped for medical deserts, and fully traceable.
+### 1. Databricks connector wired into Facility Search & Trust Scorer
 
-## Architecture
+**Connection setup**
+- Use `standard_connectors--connect` with `connector_id: "databricks"` to link the Databricks connection to this project. (Lovable Cloud will be enabled first if not already, since gateway secrets are exposed via edge functions.)
+- The user will be asked in the picker for: their Databricks **warehouse ID** and the **catalog.schema.table** name where the 10k facility dataset lives (we'll capture these as runtime secrets `DATABRICKS_WAREHOUSE_ID` and `DATABRICKS_FACILITIES_TABLE` so the same code works for any workspace).
 
-- **Frontend**: React + Tailwind dashboard (this app)
-- **Backend**: Lovable Cloud (Postgres + Edge Functions) for ingesting the dataset, caching extractions, and storing trust scores
-- **AI reasoning**: Lovable AI Gateway (Gemini) for unstructured extraction, query reasoning, and the Validator Agent — used during ingestion and at query time
-- **Databricks connector**: Wired in so live queries can be proxied to your Databricks workspace (Vector Search / Agent Bricks endpoints) once you have them deployed. Until then, the app runs end-to-end on Lovable Cloud + AI as a working demo your judges can click through.
+**New edge functions** (proxy the gateway, keep secrets server-side)
+- `supabase/functions/databricks-search/index.ts` — accepts `{ query, filters }`, parses intent (state/city/specialty/24-7) and runs a parameterized SQL statement against `${GATEWAY_URL}/2.0/sql/statements` to return the top ~50 candidate rows, then runs the existing JS scorer on the result.
+- `supabase/functions/databricks-trust/index.ts` — accepts `{ search, sortBy, asc, limit, offset }` and returns paginated trust-scored rows + per-facility detail (claimed/evidenced/contradictions/citations) on demand.
+- `supabase/functions/databricks-status/index.ts` — calls `/api/v1/verify_credentials` to confirm the connection is live; powers a green/red badge on the Databricks page and in the sidebar.
+- All three include CORS headers, Zod input validation, and `Authorization: Bearer ${LOVABLE_API_KEY}` + `X-Connection-Api-Key: ${DATABRICKS_API_KEY}`.
 
-## Data flow
+**Frontend changes**
+- New `src/data/dataSource.ts` — single switch (`useDatabricks` from `localStorage`) that decides whether `runAgent` / Trust list call the edge functions or fall back to the precomputed JSON. Exposes `searchFacilities(query)` and `listTrust(params)` with the same return shape as today, so pages don't change much.
+- `Databricks.tsx` becomes interactive: live status badge, "Use Databricks for queries" toggle, "Test query" button that runs a sample SQL and shows raw JSON, and step list that records each gateway call as a new TraceStep so it shows up in `/trace`.
+- `FacilitySearch.tsx` and `TrustScorer.tsx` swap `runAgent(...)` / direct `useFacilities()` reads for the `dataSource` helpers; UI shows a small "via Databricks" or "via local index" pill.
 
-1. You upload `VF_Hackathon_Dataset_India_Large.xlsx` from the dashboard.
-2. An ingestion edge function parses rows, normalizes structured fields (PIN code, state, district, claimed services, beds, equipment), and stores them.
-3. An extraction job runs Lovable AI over the unstructured notes per facility to pull: services actually evidenced, equipment evidenced, staff specialties, 24/7 claims, contradictions.
-4. A Trust Scorer computes a 0–100 score per facility with explicit flags (e.g. "Claims Advanced Surgery, no Anesthesiologist mentioned").
-5. A Validator Agent re-checks high-impact extractions against a small medical-standards rule set and flags hallucinations.
-6. All extractions store **row-level citations** (the exact sentence in the report) so the UI can prove every claim.
+### 2. Query history panel on Facility Search
 
-## Pages & features
+- New `src/hooks/useQueryHistory.ts` — `localStorage`-backed (key `sehat.history`), keeps last 20 entries: `{ id, query, ts, resultCount, topFacilityId, snapshot }`. `snapshot` stores the full `AgentResult` so re-opening is instant and consistent with the run that produced it.
+- New `src/components/QueryHistory.tsx` — collapsible card under the search bar on `/search` showing recent queries with result count + timestamp; each row has **Rerun** (re-executes against current data source so live data refreshes) and **Open snapshot** (loads stored `AgentResult` without re-querying). Trash icon clears one or all.
+- The same hook is reused by Agent Trace page so users can jump back to the original chain-of-thought from history.
 
-### 1. Dashboard (home)
-- KPI tiles: facilities ingested, % with trust score ≥ 80, # contradictions flagged, # PIN codes covered
-- Top 5 medical deserts (by specialty)
-- Recent agent activity feed
+### 3. Map hover + click drill-down
 
-### 2. Natural-language Facility Search
-- Single search bar: "Find the nearest facility in rural Bihar that can perform an emergency appendectomy and uses part-time doctors"
-- Results ranked by relevance + trust score
-- Each result card shows: facility name, location, matched capabilities, trust score, and an expandable **"Why this result?"** panel with cited sentences
-- Filters: state, district, specialty, 24/7, min trust score
+- In `DesertMap.tsx`:
+  - State bubbles get `onMouseEnter`/`onMouseLeave` for a floating tooltip showing `state · coverage% · verified/total · top facility name`.
+  - Clicking a state bubble opens a new right-side `Sheet` ("State drill-down") listing the **top 10 facilities** in that state for the selected specialty, ranked by `evidenced + trust − contraN` — same scoring used by the agent. Each row shows trust badge, district, beds, 24/7 flag, and a "View in Trust Scorer" link (deep-links to `/trust?focus=<id>` which auto-opens the detail sheet).
+  - Individual facility dots also become clickable and hover-highlightable (cursor + radius bump), opening the same drill-down filtered to that one facility.
+  - A small "View on map" button is added to each Facility Search result that scrolls/links to `/map?specialty=<sp>&state=<state>` with the right specialty pre-selected and the state bubble pre-opened.
 
-### 3. Trust Scorer Dashboard
-- Sortable table of all facilities with score, # contradictions, # missing-evidence flags
-- Click a row → drawer with the full breakdown: claimed vs. evidenced services, validator notes, source snippets
+### 4. Export results as CSV or PDF
 
-### 4. Medical Desert Map
-- Interactive map of India (Leaflet + open tiles)
-- Heatmap / choropleth at PIN-code or district level for high-acuity gaps: Oncology, Dialysis, Emergency Trauma, Neonatal ICU, Advanced Surgery
-- Toggle specialty; click a region to see what's missing and the nearest qualifying facility
+- New `src/lib/export.ts`:
+  - `exportCSV(rows, filename)` — builds CSV with columns: name, type, state, district, pin, beds, claimed, evidenced, trust, contradictions count, missing count, top citation. Uses native `Blob` + `URL.createObjectURL` (no deps).
+  - `exportPDF(result, details, filename)` — uses `jspdf` + `jspdf-autotable` (already common, small) to render: header (query, timestamp, data source), summary table of top facilities with trust scores, then a per-facility section with citations and validator flags. Footer has a "Sehat Atlas" mark and page numbers.
+- New `src/components/ExportMenu.tsx` — dropdown button ("Export ▾") with CSV / PDF options; placed in:
+  - **Facility Search** results header — exports the current `AgentResult.matches` + their `details`.
+  - **Trust Scorer** — exports the currently filtered/sorted rows (top 100 visible).
+  - **Desert Map state drill-down** — exports the top facilities for the selected state+specialty.
+- A `?download=csv|pdf` query param also triggers export on load, so users can share a link that produces a report.
 
-### 5. Agent Chain-of-Thought Viewer
-- For any search or scoring decision, view the full trace: query → retrieval → extraction steps → validator checks → final answer
-- Each step shows model, input, output, and the source rows it touched (Lovable's MLflow-style trace)
+### Files touched
+- New: `supabase/functions/databricks-{search,trust,status}/index.ts`, `src/data/dataSource.ts`, `src/hooks/useQueryHistory.ts`, `src/components/QueryHistory.tsx`, `src/components/ExportMenu.tsx`, `src/lib/export.ts`.
+- Edited: `src/pages/Databricks.tsx` (interactive), `src/pages/FacilitySearch.tsx` (history + export + map link), `src/pages/TrustScorer.tsx` (data-source switch + export + `?focus=`), `src/pages/DesertMap.tsx` (hover/click drill-down + URL params), `src/data/agent.ts` (extract reusable scorer), `src/App.tsx` (no route changes; just imports if needed).
+- Deps added: `jspdf`, `jspdf-autotable`.
 
-### 6. Databricks tab
-- Connect-status panel for the Databricks connector
-- Toggle: "Use Databricks Vector Search for retrieval" (falls back to Lovable Cloud retrieval when off or unconfigured)
-- Field to paste your SQL Warehouse ID + Vector Search endpoint
-- Sample query runner that proves the gateway is reachable
-
-## Design
-
-- Clean, clinical, trustworthy: white surfaces, deep indigo primary, accent teal for "verified", amber for "flagged", red for "contradiction"
-- Inter font, generous spacing, data-dense but calm
-- Every AI-generated claim shows a small "cited" chip linking to source text
-
-## What you'll do after the plan is approved
-
-1. I'll set up Lovable Cloud, the schema, ingestion + AI edge functions, and build all five UI surfaces.
-2. I'll wire the Databricks connector — you'll be prompted to connect your workspace when we reach that step.
-3. You upload the xlsx and we run a first ingestion together.
-
-## Out of scope (for v1)
-
-- Training your own model on Databricks Agent Bricks (we call Lovable AI; the Databricks tab is the integration seam for when your endpoints exist)
-- MLflow server itself (we display a trace UI built on our own logged steps)
-- Statistical prediction intervals on conclusions (can be added once base extraction is solid)
+### Out of scope / assumptions
+- Schema of the Databricks table is assumed to roughly mirror `FacilitySlim` + a `details_json` column. If the user's table is different, the edge function's SQL will be adjusted in a follow-up — the rest of the UI is decoupled via `dataSource.ts`.
+- No auth gate on the edge functions for now (single-tenant demo); rate limiting is in-memory inside the function. Can be hardened later.
