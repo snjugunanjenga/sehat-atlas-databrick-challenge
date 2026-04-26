@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -6,48 +7,46 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import TrustBadge from "@/components/TrustBadge";
+import ExportMenu from "@/components/ExportMenu";
 import { FacilityDetail, FacilitySlim, loadDetails } from "@/data/facilities";
-import { useFacilities } from "@/hooks/useFacilities";
+import { listTrust, useDataSource } from "@/data/dataSource";
 import { AlertTriangle, ArrowUpDown, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 type SortKey = "trust" | "name" | "contraN" | "missN";
 
 export default function TrustScorer() {
-  const facilities = useFacilities();
+  const [source] = useDataSource();
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("contraN");
   const [asc, setAsc] = useState(false);
   const [open, setOpen] = useState<FacilitySlim | null>(null);
   const [details, setDetails] = useState<Record<string, FacilityDetail>>({});
+  const [rows, setRows] = useState<FacilitySlim[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [params] = useSearchParams();
 
   useEffect(() => {
     loadDetails().then(setDetails);
   }, []);
 
-  const rows = useMemo(() => {
-    if (!facilities) return [];
-    const filtered = facilities.filter(
-      (f) =>
-        !search ||
-        f.name.toLowerCase().includes(search.toLowerCase()) ||
-        f.state.toLowerCase().includes(search.toLowerCase()) ||
-        (f.district || "").toLowerCase().includes(search.toLowerCase()),
-    );
-    const dir = asc ? 1 : -1;
-    return filtered.sort((a, b) => {
-      switch (sortBy) {
-        case "name":
-          return a.name.localeCompare(b.name) * dir;
-        case "contraN":
-          return (a.contraN - b.contraN) * dir;
-        case "missN":
-          return (a.missN - b.missN) * dir;
-        default:
-          return (a.trust - b.trust) * dir;
-      }
-    });
-  }, [facilities, search, sortBy, asc]);
+  useEffect(() => {
+    setLoading(true);
+    listTrust({ search, sortBy, asc, limit: 200 })
+      .then((r) => {
+        setRows(r.rows);
+        setTotal(r.total);
+      })
+      .finally(() => setLoading(false));
+  }, [search, sortBy, asc, source]);
+
+  useEffect(() => {
+    const focus = params.get("focus");
+    if (!focus || rows.length === 0) return;
+    const f = rows.find((r) => r.id === focus);
+    if (f) setOpen(f);
+  }, [params, rows]);
 
   const setSort = (k: SortKey) => {
     if (sortBy === k) setAsc(!asc);
@@ -57,92 +56,87 @@ export default function TrustScorer() {
     }
   };
 
-  if (!facilities) {
-    return (
-      <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">
-        Loading 10,000 facility records…
-      </div>
-    );
-  }
-
   const detail = open ? details[open.id] : undefined;
+
+  const exportRows = useMemo(
+    () => rows.slice(0, 100).map((f) => ({ facility: f, detail: details[f.id] })),
+    [rows, details],
+  );
 
   return (
     <div>
       <PageHeader
         title="Trust Scorer"
-        description={`Every facility's trust score, evidenced services, and validator-flagged contradictions across ${facilities.length.toLocaleString()} records.`}
+        description="Every facility's trust score, evidenced services, and validator-flagged contradictions."
+        actions={
+          <ExportMenu
+            rows={exportRows}
+            meta={{
+              title: "Trust Scorer Report",
+              subtitle: `${exportRows.length} facilities · sorted by ${sortBy} ${asc ? "asc" : "desc"}${search ? ` · search: "${search}"` : ""}`,
+              source: source === "databricks" ? "Databricks" : "Local index",
+            }}
+            filenameBase="sehat-trust"
+          />
+        }
       />
       <div className="space-y-4 p-8">
-        <Input
-          placeholder="Search by name, state, or district..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="max-w-md"
-        />
+        <div className="flex flex-wrap items-center gap-3">
+          <Input
+            placeholder="Search by name, state, or district..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="max-w-md"
+          />
+          <Badge variant={source === "databricks" ? "default" : "secondary"}>
+            via {source === "databricks" ? "Databricks" : "Local index"}
+          </Badge>
+        </div>
 
         <Card>
           <CardContent className="p-0">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>
-                    <SortBtn label="Facility" onClick={() => setSort("name")} active={sortBy === "name"} />
-                  </TableHead>
+                  <TableHead><SortBtn label="Facility" onClick={() => setSort("name")} active={sortBy === "name"} /></TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Claimed services</TableHead>
-                  <TableHead className="text-right">
-                    <SortBtn label="Missing evidence" onClick={() => setSort("missN")} active={sortBy === "missN"} />
-                  </TableHead>
-                  <TableHead className="text-right">
-                    <SortBtn label="Contradictions" onClick={() => setSort("contraN")} active={sortBy === "contraN"} />
-                  </TableHead>
-                  <TableHead className="text-right">
-                    <SortBtn label="Trust" onClick={() => setSort("trust")} active={sortBy === "trust"} />
-                  </TableHead>
+                  <TableHead className="text-right"><SortBtn label="Missing evidence" onClick={() => setSort("missN")} active={sortBy === "missN"} /></TableHead>
+                  <TableHead className="text-right"><SortBtn label="Contradictions" onClick={() => setSort("contraN")} active={sortBy === "contraN"} /></TableHead>
+                  <TableHead className="text-right"><SortBtn label="Trust" onClick={() => setSort("trust")} active={sortBy === "trust"} /></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.slice(0, 100).map((f) => (
+                {loading && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-sm text-muted-foreground">Loading…</TableCell>
+                  </TableRow>
+                )}
+                {!loading && rows.slice(0, 100).map((f) => (
                   <TableRow key={f.id} className="cursor-pointer" onClick={() => setOpen(f)}>
                     <TableCell className="font-medium">{f.name}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {f.district || "—"}, {f.state}
-                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{f.district || "—"}, {f.state}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
-                        {f.claimed.slice(0, 3).map((s) => (
-                          <Badge key={s} variant="outline" className="font-normal">
-                            {s}
-                          </Badge>
-                        ))}
-                        {f.claimed.length > 3 && (
-                          <Badge variant="outline" className="font-normal">
-                            +{f.claimed.length - 3}
-                          </Badge>
-                        )}
+                        {f.claimed.slice(0, 3).map((s) => (<Badge key={s} variant="outline" className="font-normal">{s}</Badge>))}
+                        {f.claimed.length > 3 && (<Badge variant="outline" className="font-normal">+{f.claimed.length - 3}</Badge>)}
                       </div>
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{f.missN}</TableCell>
                     <TableCell className="text-right">
                       {f.contraN > 0 ? (
                         <span className="inline-flex items-center gap-1 text-contradicted">
-                          <AlertTriangle className="h-3 w-3" />
-                          {f.contraN}
+                          <AlertTriangle className="h-3 w-3" />{f.contraN}
                         </span>
-                      ) : (
-                        <span className="text-muted-foreground">0</span>
-                      )}
+                      ) : (<span className="text-muted-foreground">0</span>)}
                     </TableCell>
-                    <TableCell className="text-right">
-                      <TrustBadge score={f.trust} />
-                    </TableCell>
+                    <TableCell className="text-right"><TrustBadge score={f.trust} /></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
             <div className="border-t px-4 py-2 text-xs text-muted-foreground">
-              Showing {Math.min(100, rows.length).toLocaleString()} of {rows.length.toLocaleString()} facilities
+              Showing {Math.min(100, rows.length).toLocaleString()} of {total.toLocaleString()} facilities
             </div>
           </CardContent>
         </Card>
@@ -170,7 +164,7 @@ export default function TrustScorer() {
 
                 <Section title="Claimed vs evidenced services">
                   <div className="space-y-1.5">
-                    {open.claimed.length === 0 && <p className="text-xs italic text-muted-foreground">No high-acuity specialties claimed.</p>}
+                    {open.claimed.length === 0 && (<p className="text-xs italic text-muted-foreground">No high-acuity specialties claimed.</p>)}
                     {open.claimed.map((s) => {
                       const ok = open.evidenced.includes(s);
                       return (
@@ -188,9 +182,7 @@ export default function TrustScorer() {
                 {detail?.staff && detail.staff.length > 0 && (
                   <Section title="Staff specialties (extracted)">
                     <div className="flex flex-wrap gap-1.5">
-                      {detail.staff.map((s) => (
-                        <Badge key={s} variant="secondary" className="font-normal">{s}</Badge>
-                      ))}
+                      {detail.staff.map((s) => (<Badge key={s} variant="secondary" className="font-normal">{s}</Badge>))}
                     </div>
                   </Section>
                 )}
@@ -198,9 +190,7 @@ export default function TrustScorer() {
                 {detail?.equipment && detail.equipment.length > 0 && (
                   <Section title="Equipment evidenced">
                     <div className="flex flex-wrap gap-1.5">
-                      {detail.equipment.map((s) => (
-                        <Badge key={s} variant="outline" className="font-normal">{s}</Badge>
-                      ))}
+                      {detail.equipment.map((s) => (<Badge key={s} variant="outline" className="font-normal">{s}</Badge>))}
                     </div>
                   </Section>
                 )}
