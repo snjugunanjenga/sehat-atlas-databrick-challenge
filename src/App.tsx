@@ -29,6 +29,7 @@ const App = () => (
             <Route path="/map" element={<DesertMap />} />
             <Route path="/trace" element={<AgentTrace />} />
             <Route path="/databricks" element={<Databricks />} />
+            <Route path="/docs" element={<Docs />} />
           </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
