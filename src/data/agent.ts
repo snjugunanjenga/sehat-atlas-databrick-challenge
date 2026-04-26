@@ -1,8 +1,8 @@
-import { FACILITIES, Facility, Specialty, trustBand } from "./facilities";
+import { FacilitySlim, Specialty, trustBand } from "./facilities";
 
-// Lightweight client-side "agent" that simulates the multi-step retrieval +
-// reasoning pipeline. Each call returns a result + a trace of steps so the
-// Chain-of-Thought viewer can render exactly what the agent did.
+// Lightweight client-side reasoning agent over the loaded slim list.
+// Returns ranked matches plus a step-level trace (mimicking Retriever / Scorer
+// / Validator / Reasoner agents) for the chain-of-thought viewer.
 
 export interface TraceStep {
   id: string;
@@ -10,145 +10,146 @@ export interface TraceStep {
   title: string;
   detail: string;
   ms: number;
-  sources?: string[]; // facility ids touched
+  sources?: string[];
 }
 
 export interface AgentResult {
   query: string;
-  matches: { facility: Facility; score: number; reasons: string[] }[];
+  matches: { facility: FacilitySlim; score: number; reasons: string[] }[];
   trace: TraceStep[];
   answer: string;
 }
 
-const STATE_KEYWORDS: Record<string, string> = {
-  bihar: "Bihar",
-  "uttar pradesh": "Uttar Pradesh",
-  "up": "Uttar Pradesh",
-  maharashtra: "Maharashtra",
-  "tamil nadu": "Tamil Nadu",
-  karnataka: "Karnataka",
-  rajasthan: "Rajasthan",
-  "west bengal": "West Bengal",
-  odisha: "Odisha",
-  jharkhand: "Jharkhand",
-  "madhya pradesh": "Madhya Pradesh",
-};
-
 const SPECIALTY_KEYWORDS: { kw: string; sp: Specialty }[] = [
   { kw: "appendectomy", sp: "Advanced Surgery" },
   { kw: "surgery", sp: "Advanced Surgery" },
+  { kw: "operation", sp: "Advanced Surgery" },
   { kw: "trauma", sp: "Emergency Trauma" },
   { kw: "emergency", sp: "Emergency Trauma" },
   { kw: "dialysis", sp: "Dialysis" },
   { kw: "kidney", sp: "Dialysis" },
+  { kw: "renal", sp: "Dialysis" },
   { kw: "cancer", sp: "Oncology" },
   { kw: "oncology", sp: "Oncology" },
+  { kw: "chemo", sp: "Oncology" },
   { kw: "neonatal", sp: "Neonatal ICU" },
   { kw: "newborn", sp: "Neonatal ICU" },
+  { kw: "nicu", sp: "Neonatal ICU" },
   { kw: "cardiac", sp: "Cardiology" },
   { kw: "heart", sp: "Cardiology" },
   { kw: "maternity", sp: "Maternity" },
   { kw: "delivery", sp: "Maternity" },
+  { kw: "dental", sp: "Dentistry" },
+  { kw: "tooth", sp: "Dentistry" },
+  { kw: "mri", sp: "Diagnostics" },
+  { kw: "scan", sp: "Diagnostics" },
+  { kw: "imaging", sp: "Diagnostics" },
 ];
 
-export function runAgent(query: string): AgentResult {
+export function runAgent(query: string, facilities: FacilitySlim[]): AgentResult {
   const trace: TraceStep[] = [];
   const q = query.toLowerCase();
 
-  // Step 1: Extract intent
-  const states = Object.entries(STATE_KEYWORDS).filter(([k]) => q.includes(k)).map(([, v]) => v);
+  // Detect state / city tokens against the actual data.
+  const allStates = Array.from(new Set(facilities.map((f) => f.state.toLowerCase())));
+  const allCities = Array.from(new Set(facilities.map((f) => f.district.toLowerCase()).filter(Boolean)));
+  const matchedStates = allStates.filter((s) => s && q.includes(s));
+  const matchedCities = allCities.filter((c) => c && q.includes(c));
+
   const specialties = Array.from(new Set(SPECIALTY_KEYWORDS.filter((s) => q.includes(s.kw)).map((s) => s.sp)));
-  const wantsRural = /rural|village|remote/.test(q);
-  const wantsPartTime = /part[- ]time|visiting|rotat/.test(q);
-  const wants247 = /24\s*\/?\s*7|round the clock|always open/.test(q);
+  const wantsRural = /rural|village|remote|district hospital/.test(q);
+  const wantsHospital = /hospital/.test(q);
+  const wants247 = /24\s*[x/]?\s*7|round the clock|always open|night/.test(q);
+  const wantsTrusted = /trust(ed|worthy)?|verified|reliable/.test(q);
 
   trace.push({
     id: "s1",
     agent: "Reasoner",
     title: "Parse query intent",
-    detail: `States: ${states.join(", ") || "any"} • Specialties: ${specialties.join(", ") || "any"} • Rural: ${wantsRural} • Part-time: ${wantsPartTime} • 24/7: ${wants247}`,
+    detail: `States: ${matchedStates.join(", ") || "any"} • Cities: ${matchedCities.join(", ") || "any"} • Specialties: ${specialties.join(", ") || "any"} • Filters: ${[
+      wantsRural && "rural",
+      wantsHospital && "hospital",
+      wants247 && "24/7",
+      wantsTrusted && "trusted",
+    ].filter(Boolean).join(", ") || "none"}`,
     ms: 142,
   });
 
-  // Step 2: Retrieve candidates
-  let candidates = FACILITIES;
-  if (states.length) candidates = candidates.filter((f) => states.includes(f.state));
+  // Retrieve
+  let candidates = facilities;
+  if (matchedStates.length) candidates = candidates.filter((f) => matchedStates.includes(f.state.toLowerCase()));
+  if (matchedCities.length) candidates = candidates.filter((f) => matchedCities.includes(f.district.toLowerCase()));
+  if (wantsHospital) candidates = candidates.filter((f) => f.facilityType === "hospital");
+
   trace.push({
     id: "s2",
     agent: "Retriever",
     title: "Vector + structured retrieval",
-    detail: `Searched ${FACILITIES.length} indexed facilities → ${candidates.length} candidates after geo filter.`,
+    detail: `Searched ${facilities.length.toLocaleString()} indexed facilities → ${candidates.length.toLocaleString()} candidates after filters.`,
     ms: 88,
   });
 
-  // Step 3: Score candidates
+  // Score
   const scored = candidates
     .map((f) => {
       let score = 0;
       const reasons: string[] = [];
       for (const sp of specialties) {
-        if (f.evidencedServices.includes(sp)) {
+        if (f.evidenced.includes(sp)) {
           score += 30;
           reasons.push(`Evidenced ${sp}`);
-        } else if (f.claimedServices.includes(sp)) {
-          score += 8;
+        } else if (f.claimed.includes(sp)) {
+          score += 6;
           reasons.push(`Claims ${sp} (unverified)`);
         }
-      }
-      if (wantsRural && f.rural) {
-        score += 15;
-        reasons.push("Rural location");
-      }
-      if (wantsPartTime && f.partTimeDoctors) {
-        score += 10;
-        reasons.push("Part-time/visiting doctors");
       }
       if (wants247 && f.open247) {
         score += 10;
         reasons.push("24/7 operation");
       }
-      score += f.trustScore * 0.3;
+      if (wantsHospital && f.facilityType === "hospital") {
+        score += 4;
+      }
+      if (wantsTrusted) score += (f.trust - 70) * 0.4;
+      score += f.trust * 0.25;
+      // Penalize contradictions
+      score -= f.contraN * 5;
       return { facility: f, score, reasons };
     })
-    .filter((r) => r.score > 10 || (specialties.length === 0 && states.length))
+    .filter((r) => r.score > 8)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 6);
+    .slice(0, 8);
 
   trace.push({
     id: "s3",
     agent: "Scorer",
     title: "Rank by capability + trust",
-    detail: `Top match: ${scored[0]?.facility.name ?? "none"} (score ${scored[0]?.score.toFixed(0)}).`,
+    detail: scored[0]
+      ? `Top match: ${scored[0].facility.name} (score ${scored[0].score.toFixed(0)}, trust ${scored[0].facility.trust}).`
+      : "No facilities matched the criteria.",
     ms: 64,
     sources: scored.slice(0, 3).map((s) => s.facility.id),
   });
 
-  // Step 4: Validator
-  const flagged = scored.filter((s) => s.facility.contradictions.length > 0);
+  // Validator
+  const flagged = scored.filter((s) => s.facility.contraN > 0);
   trace.push({
     id: "s4",
     agent: "Validator",
     title: "Cross-check against medical-standards rules",
     detail: flagged.length
-      ? `Flagged ${flagged.length} facility(ies) with contradictions; demoted in ranking.`
+      ? `Flagged ${flagged.length} candidate(s) with contradictions; demoted in ranking. See Trust Scorer for details.`
       : "All top candidates passed validator checks.",
     ms: 121,
     sources: flagged.map((f) => f.facility.id),
   });
 
-  // Final answer
   const top = scored[0];
   const answer = top
-    ? `Best match: **${top.facility.name}** in ${top.facility.district}, ${top.facility.state}. Trust score ${top.facility.trustScore} (${trustBand(top.facility.trustScore)}). ${top.reasons.join(" • ")}.`
-    : "No facility matched all criteria. Try broadening the query.";
+    ? `Best match: **${top.facility.name}** in ${top.facility.district || "—"}, ${top.facility.state}. Trust score ${top.facility.trust} (${trustBand(top.facility.trust)}). ${top.reasons.join(" • ")}.`
+    : "No facility matched all criteria. Try broadening the query or removing one filter.";
 
-  trace.push({
-    id: "s5",
-    agent: "Reasoner",
-    title: "Synthesize final answer",
-    detail: answer,
-    ms: 195,
-  });
+  trace.push({ id: "s5", agent: "Reasoner", title: "Synthesize final answer", detail: answer, ms: 195 });
 
   return { query, matches: scored, trace, answer };
 }

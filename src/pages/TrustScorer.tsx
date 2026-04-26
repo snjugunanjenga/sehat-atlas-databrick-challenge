@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -6,44 +6,48 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import TrustBadge from "@/components/TrustBadge";
-import { FACILITIES, Facility } from "@/data/facilities";
+import { FacilityDetail, FacilitySlim, loadDetails } from "@/data/facilities";
+import { useFacilities } from "@/hooks/useFacilities";
 import { AlertTriangle, ArrowUpDown, Quote } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-type SortKey = "trustScore" | "name" | "contradictions" | "missing";
+type SortKey = "trust" | "name" | "contraN" | "missN";
 
 export default function TrustScorer() {
+  const facilities = useFacilities();
   const [search, setSearch] = useState("");
-  const [sortBy, setSortBy] = useState<SortKey>("trustScore");
+  const [sortBy, setSortBy] = useState<SortKey>("contraN");
   const [asc, setAsc] = useState(false);
-  const [open, setOpen] = useState<Facility | null>(null);
+  const [open, setOpen] = useState<FacilitySlim | null>(null);
+  const [details, setDetails] = useState<Record<string, FacilityDetail>>({});
+
+  useEffect(() => {
+    loadDetails().then(setDetails);
+  }, []);
 
   const rows = useMemo(() => {
-    const filtered = FACILITIES.filter(
+    if (!facilities) return [];
+    const filtered = facilities.filter(
       (f) =>
         !search ||
         f.name.toLowerCase().includes(search.toLowerCase()) ||
         f.state.toLowerCase().includes(search.toLowerCase()) ||
-        f.district.toLowerCase().includes(search.toLowerCase()),
+        (f.district || "").toLowerCase().includes(search.toLowerCase()),
     );
     const dir = asc ? 1 : -1;
     return filtered.sort((a, b) => {
       switch (sortBy) {
         case "name":
           return a.name.localeCompare(b.name) * dir;
-        case "contradictions":
-          return (a.contradictions.length - b.contradictions.length) * dir;
-        case "missing":
-          return (
-            (a.claimedServices.filter((s) => !a.evidencedServices.includes(s)).length -
-              b.claimedServices.filter((s) => !b.evidencedServices.includes(s)).length) *
-            dir
-          );
+        case "contraN":
+          return (a.contraN - b.contraN) * dir;
+        case "missN":
+          return (a.missN - b.missN) * dir;
         default:
-          return (a.trustScore - b.trustScore) * dir;
+          return (a.trust - b.trust) * dir;
       }
     });
-  }, [search, sortBy, asc]);
+  }, [facilities, search, sortBy, asc]);
 
   const setSort = (k: SortKey) => {
     if (sortBy === k) setAsc(!asc);
@@ -53,11 +57,21 @@ export default function TrustScorer() {
     }
   };
 
+  if (!facilities) {
+    return (
+      <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">
+        Loading 10,000 facility records…
+      </div>
+    );
+  }
+
+  const detail = open ? details[open.id] : undefined;
+
   return (
     <div>
       <PageHeader
         title="Trust Scorer"
-        description="Every facility's trust score, evidenced services, and validator-flagged contradictions."
+        description={`Every facility's trust score, evidenced services, and validator-flagged contradictions across ${facilities.length.toLocaleString()} records.`}
       />
       <div className="space-y-4 p-8">
         <Input
@@ -78,60 +92,57 @@ export default function TrustScorer() {
                   <TableHead>Location</TableHead>
                   <TableHead>Claimed services</TableHead>
                   <TableHead className="text-right">
-                    <SortBtn label="Missing evidence" onClick={() => setSort("missing")} active={sortBy === "missing"} />
+                    <SortBtn label="Missing evidence" onClick={() => setSort("missN")} active={sortBy === "missN"} />
                   </TableHead>
                   <TableHead className="text-right">
-                    <SortBtn label="Contradictions" onClick={() => setSort("contradictions")} active={sortBy === "contradictions"} />
+                    <SortBtn label="Contradictions" onClick={() => setSort("contraN")} active={sortBy === "contraN"} />
                   </TableHead>
                   <TableHead className="text-right">
-                    <SortBtn label="Trust" onClick={() => setSort("trustScore")} active={sortBy === "trustScore"} />
+                    <SortBtn label="Trust" onClick={() => setSort("trust")} active={sortBy === "trust"} />
                   </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.slice(0, 80).map((f) => {
-                  const missing = f.claimedServices.filter((s) => !f.evidencedServices.includes(s)).length;
-                  return (
-                    <TableRow key={f.id} className="cursor-pointer" onClick={() => setOpen(f)}>
-                      <TableCell className="font-medium">{f.name}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {f.district}, {f.state}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          {f.claimedServices.slice(0, 3).map((s) => (
-                            <Badge key={s} variant="outline" className="font-normal">
-                              {s}
-                            </Badge>
-                          ))}
-                          {f.claimedServices.length > 3 && (
-                            <Badge variant="outline" className="font-normal">
-                              +{f.claimedServices.length - 3}
-                            </Badge>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">{missing}</TableCell>
-                      <TableCell className="text-right">
-                        {f.contradictions.length > 0 ? (
-                          <span className="inline-flex items-center gap-1 text-contradicted">
-                            <AlertTriangle className="h-3 w-3" />
-                            {f.contradictions.length}
-                          </span>
-                        ) : (
-                          <span className="text-muted-foreground">0</span>
+                {rows.slice(0, 100).map((f) => (
+                  <TableRow key={f.id} className="cursor-pointer" onClick={() => setOpen(f)}>
+                    <TableCell className="font-medium">{f.name}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {f.district || "—"}, {f.state}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {f.claimed.slice(0, 3).map((s) => (
+                          <Badge key={s} variant="outline" className="font-normal">
+                            {s}
+                          </Badge>
+                        ))}
+                        {f.claimed.length > 3 && (
+                          <Badge variant="outline" className="font-normal">
+                            +{f.claimed.length - 3}
+                          </Badge>
                         )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <TrustBadge score={f.trustScore} />
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{f.missN}</TableCell>
+                    <TableCell className="text-right">
+                      {f.contraN > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-contradicted">
+                          <AlertTriangle className="h-3 w-3" />
+                          {f.contraN}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <TrustBadge score={f.trust} />
+                    </TableCell>
+                  </TableRow>
+                ))}
               </TableBody>
             </Table>
             <div className="border-t px-4 py-2 text-xs text-muted-foreground">
-              Showing {Math.min(80, rows.length)} of {rows.length} facilities
+              Showing {Math.min(100, rows.length).toLocaleString()} of {rows.length.toLocaleString()} facilities
             </div>
           </CardContent>
         </Card>
@@ -144,19 +155,24 @@ export default function TrustScorer() {
               <SheetHeader>
                 <SheetTitle>{open.name}</SheetTitle>
                 <SheetDescription>
-                  {open.district}, {open.state} · PIN {open.pin} · {open.beds} beds
+                  {open.district || "—"}, {open.state}
+                  {open.pin && <> · PIN {open.pin}</>}
+                  {open.beds && <> · {open.beds} beds</>}
                 </SheetDescription>
               </SheetHeader>
               <div className="mt-5 space-y-5">
-                <div className="flex items-center gap-3">
-                  <TrustBadge score={open.trustScore} />
-                  <span className="text-xs text-muted-foreground">{open.rural ? "Rural" : "Urban"} · {open.open247 ? "24/7" : "Daytime only"}</span>
+                <div className="flex flex-wrap items-center gap-3">
+                  <TrustBadge score={open.trust} />
+                  <Badge variant="outline" className="text-[10px] uppercase">{open.facilityType}</Badge>
+                  {detail?.operatorType && <Badge variant="outline" className="text-[10px] uppercase">{detail.operatorType}</Badge>}
+                  {open.open247 && <Badge variant="secondary">24/7</Badge>}
                 </div>
 
                 <Section title="Claimed vs evidenced services">
                   <div className="space-y-1.5">
-                    {open.claimedServices.map((s) => {
-                      const ok = open.evidencedServices.includes(s);
+                    {open.claimed.length === 0 && <p className="text-xs italic text-muted-foreground">No high-acuity specialties claimed.</p>}
+                    {open.claimed.map((s) => {
+                      const ok = open.evidenced.includes(s);
                       return (
                         <div key={s} className="flex items-center justify-between text-sm">
                           <span>{s}</span>
@@ -169,18 +185,30 @@ export default function TrustScorer() {
                   </div>
                 </Section>
 
-                <Section title="Staff specialties">
-                  <div className="flex flex-wrap gap-1.5">
-                    {open.staffSpecialties.map((s) => (
-                      <Badge key={s} variant="secondary" className="font-normal">{s}</Badge>
-                    ))}
-                  </div>
-                </Section>
+                {detail?.staff && detail.staff.length > 0 && (
+                  <Section title="Staff specialties (extracted)">
+                    <div className="flex flex-wrap gap-1.5">
+                      {detail.staff.map((s) => (
+                        <Badge key={s} variant="secondary" className="font-normal">{s}</Badge>
+                      ))}
+                    </div>
+                  </Section>
+                )}
 
-                {open.contradictions.length > 0 && (
+                {detail?.equipment && detail.equipment.length > 0 && (
+                  <Section title="Equipment evidenced">
+                    <div className="flex flex-wrap gap-1.5">
+                      {detail.equipment.map((s) => (
+                        <Badge key={s} variant="outline" className="font-normal">{s}</Badge>
+                      ))}
+                    </div>
+                  </Section>
+                )}
+
+                {detail?.contradictions && detail.contradictions.length > 0 && (
                   <Section title="Validator contradictions">
                     <ul className="space-y-2 text-sm">
-                      {open.contradictions.map((c, i) => (
+                      {detail.contradictions.map((c, i) => (
                         <li key={i} className="rounded-md border-l-2 border-contradicted bg-contradicted/5 p-2.5">
                           <div className="font-medium">{c.claim}</div>
                           <div className="text-xs text-muted-foreground">{c.evidence}</div>
@@ -190,14 +218,16 @@ export default function TrustScorer() {
                   </Section>
                 )}
 
-                <Section title="Source notes">
-                  <p className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">{open.notes}</p>
-                </Section>
+                {detail?.description && (
+                  <Section title="Source description">
+                    <p className="rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">{detail.description}</p>
+                  </Section>
+                )}
 
-                {open.citations.length > 0 && (
+                {detail?.citations && detail.citations.length > 0 && (
                   <Section title="Citations">
                     <div className="space-y-2">
-                      {open.citations.map((c, i) => (
+                      {detail.citations.map((c, i) => (
                         <div key={i} className="rounded-md border-l-2 border-primary bg-muted/40 p-2.5 text-xs">
                           <div className="text-[10px] font-semibold uppercase tracking-wide text-primary">{c.field}</div>
                           <p className="mt-0.5 flex gap-1.5">
@@ -207,6 +237,17 @@ export default function TrustScorer() {
                         </div>
                       ))}
                     </div>
+                  </Section>
+                )}
+
+                {(detail?.phone || detail?.website) && (
+                  <Section title="Contact">
+                    {detail?.phone && <div className="text-xs">📞 {detail.phone}</div>}
+                    {detail?.website && (
+                      <a href={detail.website} target="_blank" rel="noreferrer" className="break-all text-xs text-primary hover:underline">
+                        🌐 {detail.website}
+                      </a>
+                    )}
                   </Section>
                 )}
               </div>

@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { runAgent, AgentResult, TraceStep } from "@/data/agent";
+import { useFacilities } from "@/hooks/useFacilities";
 import { Bot, Database, GitBranch, Search, Shield, Sparkles, Timer } from "lucide-react";
 
 const AGENT_ICONS: Record<TraceStep["agent"], React.ComponentType<{ className?: string }>> = {
@@ -24,36 +25,34 @@ const AGENT_COLORS: Record<TraceStep["agent"], string> = {
 };
 
 export default function AgentTrace() {
+  const facilities = useFacilities();
   const location = useLocation();
   const initial = (location.state as { result?: AgentResult } | null)?.result ?? null;
-  const [query, setQuery] = useState(initial?.query ?? "Trauma care in rural Jharkhand with high trust score");
+  const [query, setQuery] = useState(initial?.query ?? "Emergency trauma hospital in rural Bihar");
   const [result, setResult] = useState<AgentResult | null>(initial);
 
   useEffect(() => {
-    if (!initial) setResult(runAgent(query));
+    if (!initial && facilities) setResult(runAgent(query, facilities));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [facilities]);
 
   const totalMs = result?.trace.reduce((n, s) => n + s.ms, 0) ?? 0;
 
   return (
     <div>
-      <PageHeader
-        title="Agent Traces"
-        description="Step-by-step view of the agent's chain of thought — what it retrieved, reasoned, validated, and decided."
-      />
+      <PageHeader title="Agent Traces" description="Step-by-step view of the agent's chain of thought — what it retrieved, reasoned, validated, and decided." />
       <div className="space-y-6 p-8">
         <Card>
           <CardContent className="p-5">
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                setResult(runAgent(query));
+                if (facilities) setResult(runAgent(query, facilities));
               }}
               className="flex gap-2"
             >
               <Input value={query} onChange={(e) => setQuery(e.target.value)} className="h-11" />
-              <Button size="lg">Run trace</Button>
+              <Button size="lg" disabled={!facilities}>Run trace</Button>
             </form>
           </CardContent>
         </Card>
