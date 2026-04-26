@@ -1,8 +1,15 @@
+import { useMemo, useState } from "react";
+import { Search, X } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 export default function Docs() {
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+
   return (
     <div>
       <PageHeader
@@ -10,6 +17,45 @@ export default function Docs() {
         description="Architecture, scoring formulas, and integration reference for Sehat Atlas."
       />
       <div className="mx-auto max-w-3xl space-y-6 p-8">
+        <div className="sticky top-0 z-10 -mx-2 bg-background/80 px-2 py-2 backdrop-blur">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search docs — try 'trust scoring', 'schema', 'pipeline'…"
+              className="pl-9 pr-9"
+              aria-label="Search documentation"
+            />
+            {query && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setQuery("")}
+                className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2"
+                aria-label="Clear search"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+          {q && (
+            <div className="mt-2 flex flex-wrap gap-1 text-xs text-muted-foreground">
+              <span>Quick jump:</span>
+              {["Trust scoring formula", "Expected table schema", "Agent pipeline", "Contradiction rules", "Architecture"].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setQuery(s)}
+                  className="rounded border bg-muted/50 px-1.5 py-0.5 hover:bg-muted"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <SearchableArea query={q}>
         <Section title="What is Sehat Atlas?">
           <p>
             Sehat Atlas is the reasoning layer for Indian healthcare. It ingests 10,000+ unstructured facility records,
@@ -130,9 +176,57 @@ X-Connection-Api-Key: \${DATABRICKS_API_KEY}
   "wait_timeout": "30s"
 }`}</pre>
         </Section>
+        </SearchableArea>
       </div>
     </div>
   );
+}
+
+function SearchableArea({ query, children }: { query: string; children: React.ReactNode }) {
+  const sections = useMemo(() => {
+    const arr = Array.isArray(children) ? children : [children];
+    if (!query) return { nodes: arr, matches: arr.length, total: arr.length };
+    const filtered = arr.filter((child: any) => {
+      if (!child || typeof child !== "object") return false;
+      const title: string = child.props?.title ?? "";
+      const text = extractText(child).toLowerCase();
+      return title.toLowerCase().includes(query) || text.includes(query);
+    });
+    return { nodes: filtered, matches: filtered.length, total: arr.length };
+  }, [children, query]);
+
+  return (
+    <div className="space-y-6">
+      {query && (
+        <p className="text-xs text-muted-foreground">
+          {sections.matches} of {sections.total} sections match "{query}"
+        </p>
+      )}
+      {sections.nodes.length === 0 ? (
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            No sections match. Try "trust", "schema", "pipeline", "contradiction", or "databricks".
+          </CardContent>
+        </Card>
+      ) : (
+        sections.nodes
+      )}
+    </div>
+  );
+}
+
+function extractText(node: any): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join(" ");
+  if (typeof node === "object" && node.props) {
+    let s = "";
+    if (node.props.title) s += " " + node.props.title;
+    if (node.props.rows) s += " " + JSON.stringify(node.props.rows);
+    if (node.props.children) s += " " + extractText(node.props.children);
+    return s;
+  }
+  return "";
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
