@@ -22,6 +22,19 @@ export default {
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
+          glow: "hsl(var(--primary-glow))",
+        },
+        verified: {
+          DEFAULT: "hsl(var(--verified))",
+          foreground: "hsl(var(--verified-foreground))",
+        },
+        flagged: {
+          DEFAULT: "hsl(var(--flagged))",
+          foreground: "hsl(var(--flagged-foreground))",
+        },
+        contradicted: {
+          DEFAULT: "hsl(var(--contradicted))",
+          foreground: "hsl(var(--contradicted-foreground))",
         },
         secondary: {
           DEFAULT: "hsl(var(--secondary))",
